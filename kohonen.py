@@ -3,16 +3,14 @@ from sklearn.preprocessing import MinMaxScaler
 import math
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
-from sklearn.metrics import confusion_matrix
-import seaborn as sns
 from mpl_toolkits.mplot3d import Axes3D
-from sklearn.metrics import classification_report
-import matplotlib.colors as mcolors
+from collections import Counter
+
 
 
 # Função para ler os dados
 def read_data(filename):
-    class_mapping = {'Iris-setosa': [1, 0], 'Iris-versicolor': [0, 1], 'Iris-virginica': [0, 0]}  # Mapeia as classes para binário
+    class_mapping = {'Iris-setosa': 0, 'Iris-versicolor': 1, 'Iris-virginica': 2}  # Mapeia as classes para binário
     
     X = []
     d = []
@@ -52,7 +50,7 @@ def update_weights(W, X, t, winner_idx, sigma, grid_size):
         W[i, :] += influence * eta * (X - W[i, :])  # Aplica a fórmula de atualização com a nova taxa de aprendizado
 
 # Inicializar a rede de Kohonen
-def kohonen_train(X, grid_size=5, learning_rate=0.01, sigma_0=None, epochs=100):
+def kohonen_train(X, grid_size=5, sigma_0=None, epochs=100):
     input_size = X.shape[1]
     W = np.random.rand(grid_size * grid_size, input_size)  # Inicialização aleatória dos pesos
     
@@ -63,19 +61,33 @@ def kohonen_train(X, grid_size=5, learning_rate=0.01, sigma_0=None, epochs=100):
     # Calcular tau_1 conforme Haykin (2001)
     tau_1 = 1000 / math.log(sigma_0)
     
+    prev_winner_indices = np.full(X.shape[0], -1)  # Inicializa com -1 para representar "sem vencedor anterior"
+
     for epoch in range(epochs):
-        for x in X:
+        no_change = True  # Para verificar se houve mudança nos neurônios vencedores
+
+        for i, x in enumerate(X):
             # Encontrar o neurônio vencedor
             distances = euclidean_distance(x, W)
             
             winner_idx = np.argmin(distances)
             
+            # Verificar se houve mudança no neurônio vencedor
+            if winner_idx != prev_winner_indices[i]:
+                no_change = False  # Houve mudança
+            prev_winner_indices[i] = winner_idx  # Atualizar o índice do neurônio vencedor
+
+
             # Calcular sigma(t) para a vizinhança gaussiana
             sigma_t = sigma_0 * np.exp(-epoch / tau_1)
             
             # Atualizar pesos com a vizinhança gaussiana e decaimento da taxa de aprendizado
-            update_weights(W, x, epoch, winner_idx, sigma_t, grid_size)      
+            update_weights(W, x, epoch, winner_idx, sigma_t, grid_size)
         
+        # Se não houve mudança nos neurônios vencedores, parar o treinamento
+        if no_change:
+            print(f'Treinamento interrompido no epoch {epoch}, pois não houve mudança no neurônio vencedor.')
+            break      
     return W
 
 
@@ -108,12 +120,6 @@ def calculate_u_matrix(W, grid_size):
 
     return u_matrix
 
-def plot_u_matrix(u_matrix, title):
-    plt.imshow(u_matrix, cmap='gray')  # Exibir a matriz-U como uma imagem em escala de cinza
-    plt.colorbar()  # Mostrar a barra de cores
-    plt.title(title)
-    plt.show()
-
 def plot_all_u_matrices(u_matrices, titles):
     fig, axs = plt.subplots(1, len(u_matrices), figsize=(15, 5))
 
@@ -139,15 +145,20 @@ def plot_clusters_3d(W_list, grid_sizes, X2, d2):
         
         # Ajustar o K-means para a grade atual
         kmeans = KMeans(n_clusters=3, random_state=42)
-        clusters = kmeans.fit_predict(W)
+        clusters_fit = kmeans.fit(W)
+        clusters = clusters_fit.predict(W)
 
         # Testar os dados de teste em cada topologia usando os clusters K-Means
         y_pred = test_kmeans_on_kohonen(X2, W, clusters)
-        # Classes reais (planas) para o conjunto de teste
-        y_test_flat = np.argmax(d2, axis=1)
+
+        # Mapear clusters para classes reais (Iris-setosa, Iris-versicolor, Iris-virginica)
+        cluster_class_mapping = map_clusters_to_classes(y_pred, d2)
+
+        # Agora, você pode usar essa mapeamento para renomear os clusters conforme as classes:
+        y_pred = [cluster_class_mapping[cluster] for cluster in y_pred]
 
         # Calcular a acurácia para cada topologia
-        accuracy = calculate_accuracy(y_pred, y_test_flat)
+        accuracy = calculate_accuracy(y_pred, d2)
         
         # Mapear cada cluster a uma cor fixa
         cluster_color_map = [cluster_colors[label] for label in clusters]
@@ -158,13 +169,13 @@ def plot_clusters_3d(W_list, grid_sizes, X2, d2):
         
         # Plotar os centróides do K-means em 3D
         ax.scatter(kmeans.cluster_centers_[:, 0], kmeans.cluster_centers_[:, 1], kmeans.cluster_centers_[:, 2], 
-                   color='red', marker='x', s=100, label='Centróides K-means', edgecolor='black')
+                   color='red', marker='x', s=100, label='Centróides K-means')
 
         # Configurar título e legendas
         ax.set_title(f'Clusters para Grid {grid_size}x{grid_size}')
-        ax.set_xlabel('Dimensão 1')
-        ax.set_ylabel('Dimensão 2')
-        ax.set_zlabel('Dimensão 3')
+        ax.set_xlabel('SepalLength')
+        ax.set_ylabel('SepalWidth')
+        ax.set_zlabel('PetalLength')
 
         # Criar a legenda personalizada para os clusters
         for color, label in zip(cluster_colors, cluster_labels):
@@ -186,16 +197,30 @@ def test_kmeans_on_kohonen(X_test, W, clusters):
         y_pred.append(predicted_cluster)
     return np.array(y_pred)
 
-# Função para avaliar a formação dos grupos
-def evaluate_clusters(y_pred, y_true):
-    print(classification_report(y_true, y_pred, target_names=['Iris-setosa', 'Iris-versicolor', 'Iris-virginica']))
-
 # Função para calcular a acurácia manualmente
 def calculate_accuracy(y_pred, y_true):
     correct_predictions = np.sum(y_pred == y_true)
     total_predictions = len(y_true)
     accuracy = (correct_predictions / total_predictions) * 100
     return accuracy
+
+
+def map_clusters_to_classes(y_pred, y_true):
+    # Mapear cada cluster para a classe mais comum
+    cluster_class_map = {}
+    for cluster_idx in range(3):  # Supondo 3 clusters
+        # Pegar os índices dos pontos que pertencem a esse cluster
+        points_in_cluster = np.where(y_pred == cluster_idx)[0]
+        # Obter os rótulos verdadeiros desses pontos
+        true_labels_in_cluster = y_true[points_in_cluster]
+        # Contar a frequência de cada classe no cluster
+        class_counts = Counter(true_labels_in_cluster)
+        # Determinar a classe mais comum no cluster
+        most_common_class = class_counts.most_common(1)[0][0]
+        # Mapear o cluster à classe mais frequente
+        cluster_class_map[cluster_idx] = most_common_class
+
+    return cluster_class_map
 
 # Ler os dados de treinamento e teste
 X1, d1 = read_data('iris-tra.dat')
@@ -207,20 +232,19 @@ X1 = scaler.fit_transform(X1)
 X2 = scaler.fit_transform(X2)
 
 # Definir parâmetros
-learning_rate = 0.01
 grid_size = 5
-epochs = 100
+epochs = 200
 sigma_0 = grid_size / 2  # Valor inicial de sigma (raio do mapa)
 tau_1 = 1000 / math.log(sigma_0)  # Constante de tempo, calculada com base em sigma_0
 
 grid_size1 = 5
-grid_size2 = 5
-grid_size3 = 5
+grid_size2 = 8
+grid_size3 = 10
 
 # Exemplo de uso após treinar cada topologia
-W1 = kohonen_train(X1, grid_size1, learning_rate, sigma_0, epochs)
-W2 = kohonen_train(X1, grid_size2, learning_rate, sigma_0, epochs)
-W3 = kohonen_train(X1, grid_size3, learning_rate, sigma_0, epochs)
+W1 = kohonen_train(X1, grid_size1, sigma_0, epochs)
+W2 = kohonen_train(X1, grid_size2, sigma_0, epochs)
+W3 = kohonen_train(X1, grid_size3, sigma_0, epochs)
 
 # Lista de todas as grades e tamanhos
 W_list = [W1, W2, W3]
@@ -230,10 +254,10 @@ grid_sizes = [grid_size1, grid_size2, grid_size3]
 plot_clusters_3d(W_list, grid_sizes, X2, d2)
 
 # Calcular a matriz-U para cada topologia
-#u_matrix1 = calculate_u_matrix(W1, grid_size1)
-#u_matrix2 = calculate_u_matrix(W2, grid_size2)
-#u_matrix3 = calculate_u_matrix(W3, grid_size3)
+u_matrix1 = calculate_u_matrix(W1, grid_size1)
+u_matrix2 = calculate_u_matrix(W2, grid_size2)
+u_matrix3 = calculate_u_matrix(W3, grid_size3)
 
 # Plotar as matrizes-U
-#plot_all_u_matrices([u_matrix1, u_matrix2, u_matrix3], ["Topologia 1", "Topologia 2", "Topologia 3"])
+plot_all_u_matrices([u_matrix1, u_matrix2, u_matrix3], [f'Grid {grid_size1}x{grid_size1}', f'Grid {grid_size2}x{grid_size2}', f'Grid {grid_size3}x{grid_size3}'])
 
